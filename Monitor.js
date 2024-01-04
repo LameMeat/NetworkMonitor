@@ -41,13 +41,13 @@ function sendRequests() {
                 //console.log("Response received from " + server + " with status " + res.statusCode + " at " + resTime);
                 if(statuses[server] != res.statusCode){
                     resTime = new Date();
-                    msg = "Status of " + server + " changed from " + statuses[server] + " to " + res.statusCode + " at " + resTime;
+                    msg = "\rStatus of " + server + " changed from " + statuses[server] + " to " + res.statusCode + " at " + resTime;
                     console.log(msg);
                     fs.appendFile(logFilePath, msg + "\n", (err) => {
                         if (err) {
-                          console.error('Error writing to the log file:', err);
+                          console.error('\rError writing to the log file:', err);
                         } else {
-                          console.log('Event logged to', logFilePath);
+                          console.log('\rEvent logged to', logFilePath);
                         }
                     });
                     statuses[server] = res.statusCode;
@@ -57,8 +57,10 @@ function sendRequests() {
         
         // Handle errors
         req.on("error", (error) => {
-            console.error("Error sending GET request to " + server + " via " + addresses[server] + " on port " + ports[server] + " at " + startTime);
-            console.error("Error: " + error.message);
+            msg = "\rError sending GET request to " + server + " via " + addresses[server] + " on port " + ports[server] + " at " + startTime;
+            console.log(msg);
+            console.error(msg);
+            console.error("\rError: " + error.message);
             statuses[server] = "error";
         });
     }
