@@ -1,15 +1,13 @@
 const http = require("http");
 const fs = require("fs");
+const os = require("os");
+const { exec } = require("child_process");
 
 const logFilePath = "events.log";
 
 const addresses = {
     "google":"www.google.com", 
     "router":"192.168.0.1"};
-const ports = {
-    "google":"80",
-    "router":"80"
-}
 
 let statuses = {
     "google":"0",
@@ -23,54 +21,62 @@ let index = 0
 function sendRequests() {
     for (const server in addresses) {
         const startTime = new Date();
-        //console.log("Sending GET request to " + server + " via " + addresses[server] + " on port " + ports[server] + " at " + startTime);
-        const req = http.get({
-            hostname: addresses[server], 
-            port: ports[server]
-        },(res) => {
-            // Callback function to handle the response
-            let data = "";
-        
-            // A chunk of data has been received.
-            res.on("data", (chunk) => {
-                data += chunk;
-            });
-        
-            // The whole response has been received.
-            res.on("end", () => {
-                //console.log("Response received from " + server + " with status " + res.statusCode + " at " + resTime);
-                if(statuses[server] != res.statusCode){
-                    resTime = new Date();
-                    msg = "\rStatus of " + server + " changed from " + statuses[server] + " to " + res.statusCode + " at " + resTime;
-                    console.log(msg);
-                    fs.appendFile(logFilePath, msg + "\n", (err) => {
-                        if (err) {
-                          console.error('\rError writing to the log file:', err);
-                        } else {
-                          console.log('\rEvent logged to', logFilePath);
-                        }
-                    });
-                    statuses[server] = res.statusCode;
+        pingAddress(addresses[server], (success) => {
+            if (success) {
+                newStatus = "success";
+                if (statuses[server] != newStatus) {
+                    process.stdout.clearLine();
+                    process.stdout.cursorTo(0);
+                    //console.log(`New Success pinging ${server} at ${new Date()}`);
+                    logEvent({server: server, oldStatus: statuses[server], newStatus: newStatus});
                 }
-            });
-        });
-        
-        // Handle errors
-        req.on("error", (error) => {
-            msg = "\rError sending GET request to " + server + " via " + addresses[server] + " on port " + ports[server] + " at " + startTime;
-            console.log(msg);
-            console.error(msg);
-            console.error("\rError: " + error.message);
-            statuses[server] = "error";
+                statuses[server] = "success";
+            } else {
+                newStatus = "error";
+                if (statuses[server] != newStatus) {
+                    process.stdout.clearLine();
+                    process.stdout.cursorTo(0);
+                    //console.log(`New Error pinging ${server} at ${new Date()}`);
+                    logEvent({server: server, oldStatus: statuses[server], newStatus: newStatus});
+                }
+                statuses[server] = "error";
+            }
         });
     }
     if (index > 0 && index < 11) {
         process.stdout.write(".");
     } else {
         index = 1;
-        process.stdout.write("\r                      \r")
+        process.stdout.clearLine();
+        process.stdout.cursorTo(0);
     }
     index++;
+}
+
+function pingAddress(address, callback) {
+    // Determine the ping command based on the operating system
+    const pingCmd = os.platform() === "win32" ? `ping -n 1 ${address} > nul` : `ping -c 1 ${address} > /dev/null`;
+
+    exec(pingCmd, (error, stdout, stderr) => {
+        if (error || stderr) {
+            callback(false);
+            return;
+        }
+        callback(true);
+    });
+}
+
+function logEvent(event) {
+    resTime = new Date();
+    msg = "\rStatus of " + event.server + " changed from " + event.oldStatus + " to " + event.newStatus + " at " + resTime;
+    console.log(msg);
+    fs.appendFile(logFilePath, msg + "\n", (err) => {
+        if (err) {
+            console.error('\rError writing to the log file:', err);
+        } else {
+            //console.log('\rEvent logged to', logFilePath);
+        }
+    });
 }
 
 const interval = setInterval(sendRequests,1000);
