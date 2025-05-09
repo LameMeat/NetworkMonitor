@@ -1,82 +1,165 @@
-const http = require("http");
 const fs = require("fs");
 const os = require("os");
 const { exec } = require("child_process");
 
-const logFilePath = "events.log";
+class NetworkMonitor {
+    constructor(configPath) {
+        this.configPath = configPath;
+        this.config = this.loadConfig();
+        this.validateConfig();
+        this.logFilePath = this.config.logFilePath || "events.log";
+        this.requestInterval = this.config.requestInterval || 1; // Default to 1 second
+        this.flushInterval = this.config.flushInterval || 60; // Default to 60 seconds
+        this.countdown = this.flushInterval;
+        this.statuses = {};
+        this.aggregatedLogs = {}; // In-memory structure for aggregation
 
-const addresses = {
-    "google":"www.google.com", 
-    "router":"192.168.0.1"};
+        this.initializeStatuses();
+    }
 
-let statuses = {
-    "google":"0",
-    "router":"0"
-}
+    // Load configuration from JSON file
+    loadConfig() {
+        try {
+            const data = fs.readFileSync(this.configPath, "utf8");
+            return JSON.parse(data);
+        } catch (err) {
+            console.error("Error loading configuration file:", err.message);
+            process.exit(1);
+        }
+    }
 
-const indicators = ['-', '\\', '|', '/'];
+    // Validate configuration structure
+    validateConfig() {
+        if (!this.config.addresses || typeof this.config.addresses !== "object") {
+            throw new Error("Invalid configuration: 'addresses' must be an object with server names as keys and addresses as values.");
+        }
+        if (typeof this.config.requestInterval !== "number" || this.config.requestInterval <= 0) {
+            throw new Error("Invalid configuration: 'requestInterval' must be a positive number.");
+        }
+        if (typeof this.config.flushInterval !== "number" || this.config.flushInterval <= 0) {
+            throw new Error("Invalid configuration: 'flushInterval' must be a positive number.");
+        }
+    }
 
-let index = 0
+    // Initialize statuses and logs
+    initializeStatuses() {
+        for (const server in this.config.addresses) {
+            this.statuses[server] = "unknown";
+            this.aggregatedLogs[server] = {
+                passed: 0,
+                failed: 0,
+                firstPingTime: null,
+                lastPingTime: null,
+            };
+        }
+    }
 
-function sendRequests() {
-    for (const server in addresses) {
-        const startTime = new Date();
-        pingAddress(addresses[server], (success) => {
-            if (success) {
-                newStatus = "success";
-                if (statuses[server] != newStatus) {
-                    process.stdout.clearLine();
-                    process.stdout.cursorTo(0);
-                    //console.log(`New Success pinging ${server} at ${new Date()}`);
-                    logEvent({server: server, oldStatus: statuses[server], newStatus: newStatus});
-                }
-                statuses[server] = "success";
-            } else {
-                newStatus = "error";
-                if (statuses[server] != newStatus) {
-                    process.stdout.clearLine();
-                    process.stdout.cursorTo(0);
-                    //console.log(`New Error pinging ${server} at ${new Date()}`);
-                    logEvent({server: server, oldStatus: statuses[server], newStatus: newStatus});
-                }
-                statuses[server] = "error";
+    // Send requests to all configured addresses
+    sendRequests() {
+        const currentTime = new Date().toISOString();
+
+        for (const server in this.config.addresses) {
+            const address = this.config.addresses[server];
+            this.pingAddress(address, (success) => {
+                this.handlePingResult(server, success, currentTime);
+            });
+        }
+    }
+
+    // Handle the result of a ping
+    handlePingResult(server, success, currentTime) {
+        const log = this.aggregatedLogs[server];
+
+        if (success) {
+            log.passed++;
+        } else {
+            log.failed++;
+        }
+
+        if (!log.firstPingTime) {
+            log.firstPingTime = currentTime;
+        }
+        log.lastPingTime = currentTime;
+    }
+
+    // Periodically write aggregated logs to the log file
+    flushLogs() {
+        const endOfInterval = new Date().toISOString();
+
+        for (const server in this.aggregatedLogs) {
+            const log = this.aggregatedLogs[server];
+            const total = log.passed + log.failed;
+            const successRate = total > 0 ? ((log.passed / total) * 100).toFixed(2) : "0.00";
+
+            const message = `${server}: ${log.passed}/${total} pass/fail (${successRate}%) between ${log.firstPingTime || "N/A"} and ${endOfInterval}`;
+            this.logMessage(message);
+
+            // Reset the aggregated log for the server
+            this.aggregatedLogs[server] = {
+                passed: 0,
+                failed: 0,
+                firstPingTime: null,
+                lastPingTime: null,
+            };
+        }
+    }
+
+    // Ping a specific address
+    pingAddress(address, callback) {
+        const pingCmd = os.platform() === "win32" ? `ping -n 1 ${address}` : `ping -c 1 ${address}`;
+
+        exec(pingCmd, (error, stdout, stderr) => {
+            if (error || stderr) {
+                callback(false);
+                return;
+            }
+            callback(true);
+        });
+    }
+
+    // Log a message to the log file and console
+    logMessage(message) {
+        console.log(message); // Output to the console
+        fs.appendFile(this.logFilePath, message + "\n", (err) => {
+            if (err) {
+                console.error("Error writing to the log file:", err);
             }
         });
     }
-    if (index > 0 && index < 11) {
-        process.stdout.write(".");
-    } else {
-        index = 1;
-        process.stdout.clearLine();
-        process.stdout.cursorTo(0);
+
+    // Start the flush countdown and log flushing
+    startFlushCountdown() {
+        setInterval(() => {
+            if (this.countdown === 0) {
+                // Clear the countdown line before flushing logs
+                process.stdout.clearLine();
+                process.stdout.cursorTo(0);
+
+                // Flush logs when countdown reaches 0
+                this.flushLogs();
+                this.countdown = this.flushInterval; // Reset countdown
+            } else {
+                // Update the countdown in the console
+                process.stdout.clearLine();
+                process.stdout.cursorTo(0);
+                process.stdout.write(`Time until next log flush: ${this.countdown}s`);
+                this.countdown--;
+            }
+        }, 1000); // Update every second
     }
-    index++;
+
+    // Start the monitoring process
+    startMonitoring() {
+        const startTime = new Date().toISOString();
+        const startMessage = `Network monitor started at: ${startTime}`;
+        this.logMessage(startMessage);
+
+        // Schedule periodic pings
+        setInterval(() => this.sendRequests(), this.requestInterval * 1000);
+
+        // Start the flush countdown and log flushing
+        this.startFlushCountdown();
+    }
 }
 
-function pingAddress(address, callback) {
-    // Determine the ping command based on the operating system
-    const pingCmd = os.platform() === "win32" ? `ping -n 1 ${address} > nul` : `ping -c 1 ${address} > /dev/null`;
-
-    exec(pingCmd, (error, stdout, stderr) => {
-        if (error || stderr) {
-            callback(false);
-            return;
-        }
-        callback(true);
-    });
-}
-
-function logEvent(event) {
-    resTime = new Date();
-    msg = "\rStatus of " + event.server + " changed from " + event.oldStatus + " to " + event.newStatus + " at " + resTime;
-    console.log(msg);
-    fs.appendFile(logFilePath, msg + "\n", (err) => {
-        if (err) {
-            console.error('\rError writing to the log file:', err);
-        } else {
-            //console.log('\rEvent logged to', logFilePath);
-        }
-    });
-}
-
-const interval = setInterval(sendRequests,1000);
+module.exports = NetworkMonitor;
