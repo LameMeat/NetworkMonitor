@@ -50,6 +50,8 @@ class NetworkMonitor {
                 failed: 0,
                 firstPingTime: null,
                 lastPingTime: null,
+                averageResponseTime: 0,
+                aggregateResponseTime: 0
             };
         }
     }
@@ -60,18 +62,19 @@ class NetworkMonitor {
 
         for (const server in this.config.addresses) {
             const address = this.config.addresses[server];
-            this.pingAddress(address, (success) => {
-                this.handlePingResult(server, success, currentTime);
+            this.pingAddress(address, (success, responseTime) => {
+                this.handlePingResult(server, success, responseTime, currentTime);
             });
         }
     }
 
     // Handle the result of a ping
-    handlePingResult(server, success, currentTime) {
+    handlePingResult(server, success, responseTime, currentTime) {
         const log = this.aggregatedLogs[server];
 
         if (success) {
             log.passed++;
+            log.aggregateResponseTime += responseTime;
         } else {
             log.failed++;
         }
@@ -80,6 +83,28 @@ class NetworkMonitor {
             log.firstPingTime = currentTime;
         }
         log.lastPingTime = currentTime;
+
+        // Calculate average response time
+        const totalPings = log.passed + log.failed;
+        log.averageResponseTime = totalPings > 0 ? (log.aggregateResponseTime / log.passed).toFixed(2) : 0;
+    }
+
+    // Ping a specific address
+    pingAddress(address, callback) {
+        const pingCmd = os.platform() === "win32" ? `ping -n 1 ${address}` : `ping -c 1 ${address}`;
+
+        exec(pingCmd, (error, stdout, stderr) => {
+            if (error || stderr) {
+                callback(false, 0);
+                return;
+            }
+
+            // Parse response time from ping output
+            const responseTimeMatch = stdout.match(/time[=<]\s?(\d+\.?\d*)\s?ms/);
+            const responseTime = responseTimeMatch ? parseFloat(responseTimeMatch[1]) : 0;
+
+            callback(true, responseTime);
+        });
     }
 
     // Periodically write aggregated logs to the log file
@@ -89,9 +114,9 @@ class NetworkMonitor {
         for (const server in this.aggregatedLogs) {
             const log = this.aggregatedLogs[server];
             const total = log.passed + log.failed;
-            const successRate = total > 0 ? ((log.passed / total) * 100).toFixed(2) : "0.00";
+            const successRate = total > 0 ? ((log.passed / total) * 100).toFixed(2) : "N/A";
 
-            const message = `${server}: ${log.passed}/${total} pass/fail (${successRate}%) between ${log.firstPingTime || "N/A"} and ${endOfInterval}`;
+            const message = `${server}: ${log.passed}/${log.failed} pass/fail (${successRate}%) between ${log.firstPingTime || "N/A"} and ${endOfInterval}. Avg response time: ${log.averageResponseTime} ms`;
             this.logMessage(message);
 
             // Reset the aggregated log for the server
@@ -100,21 +125,10 @@ class NetworkMonitor {
                 failed: 0,
                 firstPingTime: null,
                 lastPingTime: null,
+                averageResponseTime: 0,
+                aggregateResponseTime: 0
             };
         }
-    }
-
-    // Ping a specific address
-    pingAddress(address, callback) {
-        const pingCmd = os.platform() === "win32" ? `ping -n 1 ${address}` : `ping -c 1 ${address}`;
-
-        exec(pingCmd, (error, stdout, stderr) => {
-            if (error || stderr) {
-                callback(false);
-                return;
-            }
-            callback(true);
-        });
     }
 
     // Log a message to the log file and console
